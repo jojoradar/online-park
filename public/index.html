@@ -309,6 +309,21 @@ function makeBox() {
   b.position.y = 0.27;
   return b;
 }
+// P2 fix: 更新名稱標籤文字（不產生新 texture，避免記憶體洩漏）
+function updateNameTag(tag, text) {
+  const c = tag.material.map.image; // 共用同一個 canvas
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  g.font = 'bold 32px sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = 'rgba(0,0,0,.5)';
+  const w = g.measureText(text).width + 20;
+  g.fillRect(128 - w / 2, 8, w, 48);
+  g.fillStyle = '#fff';
+  g.fillText(text, 128, 32);
+  tag.material.map.needsUpdate = true;
+}
+
 function makeNameTag(text) {
   const c = document.createElement('canvas'); c.width = 256; c.height = 64;
   const g = c.getContext('2d');
@@ -349,6 +364,9 @@ function setMyChar(charType) {
 // 遠端玩家
 const others = new Map(); // id -> { mesh, box, tag, tx, ty, tz, try_, lying, box, last }
 function addOther(id, name, state) {
+  // P1 fix: 先移除舊 mesh（reconnect / 重複 join 不產生雙重實體）
+  const existing = others.get(id);
+  if (existing) { scene.remove(existing.mesh, existing.box); }
   const mesh = makeCharByType(state.charType); // 依 charType 呼叫對應 makeCharXXX()
   const box = makeBox();
   const tag = makeNameTag(name);
@@ -435,8 +453,7 @@ function connect(name, charType) {
   myName = name;
   myCharType = charType;
   setMyChar(charType);
-  myTag.material.map = makeNameTag(name).material.map;
-  myTag.material.needsUpdate = true;
+  updateNameTag(myTag, name); // P2 fix: 更新 canvas 而非建立新 texture（內含 needsUpdate）
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
   ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, charType }));
   ws.onmessage = (e) => {
