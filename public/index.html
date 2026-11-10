@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>線上公園</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; font-family: "Microsoft JhengHei", sans-serif; background: #000; }
+  canvas { display: block; }
+
+  /* 登入畫面 */
+  #login {
+    position: fixed; inset: 0; z-index: 100;
+    background: linear-gradient(#87ceeb 0%, #b8e6b8 60%, #7ec850 100%);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+  }
+  #login h1 { font-size: 56px; color: #2d5a1e; text-shadow: 3px 3px 0 rgba(255,255,255,.6); margin-bottom: 8px; }
+  #login p { color: #3a6b2a; margin-bottom: 24px; font-size: 16px; }
+  #login input {
+    font-size: 22px; padding: 12px 18px; width: 280px; text-align: center;
+    border: 4px solid #5a3d1e; border-radius: 4px; background: #fff; outline: none;
+  }
+  #login button {
+    margin-top: 18px; font-size: 20px; padding: 12px 40px; cursor: pointer;
+    background: #7ec850; border: 4px solid #4a7a2e; border-radius: 4px; color: #1e3a10;
+  }
+  #login button:hover { background: #8fdd5e; }
+  #login button:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* 角色選擇 */
+  #charselect { display: flex; gap: 12px; margin: 16px 0 4px; }
+  .charcard {
+    width: 118px; padding: 8px 8px 6px; text-align: center; cursor: pointer;
+    background: rgba(255,255,255,.8); border: 4px solid #5a3d1e; border-radius: 6px;
+  }
+  .charcard canvas { display: block; margin: 0 auto; image-rendering: pixelated; }
+  .charcard .cname { font-size: 15px; color: #2d5a1e; margin-top: 4px; }
+  .charcard .cdesc { font-size: 11px; color: #6b8f5a; }
+  .charcard.selected { border-color: #ff9800; background: #fff3d6; box-shadow: 0 0 0 3px rgba(255,152,0,.55); }
+
+  /* HUD */
+  #hud { position: fixed; top: 10px; left: 10px; z-index: 10; color: #fff;
+    background: rgba(0,0,0,.45); padding: 10px 14px; border-radius: 6px; font-size: 13px; line-height: 1.7; }
+  #hud b { color: #ffe082; }
+
+  /* 聊天室 */
+  #chatbox {
+    position: fixed; left: 10px; bottom: 10px; z-index: 10; width: 340px;
+    background: rgba(0,0,0,.55); border-radius: 6px; padding: 8px; color: #fff;
+  }
+  #chatmsgs { height: 150px; overflow-y: auto; font-size: 13px; line-height: 1.6; margin-bottom: 6px; }
+  #chatmsgs .sys { color: #9e9e9e; }
+  #chatmsgs .who { color: #ffe082; }
+  #chatinput {
+    width: 100%; font-size: 14px; padding: 6px 8px; border: none; border-radius: 4px; outline: none;
+    background: rgba(255,255,255,.9);
+  }
+  #chatinput::placeholder { color: #888; }
+  #chatcount { position: fixed; left: 10px; bottom: 190px; z-index: 10; color: #fff; font-size: 12px;
+    background: rgba(0,0,0,.4); padding: 2px 8px; border-radius: 4px; display: none; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>🌳 線上公園</h1>
+  <p>帶上你的紙箱，來公園找個位子躺一下</p>
+  <input id="nameinput" maxlength="16" placeholder="輸入你的名字" autofocus>
+  <p style="margin-top:20px">選擇你的角色</p>
+  <div id="charselect"></div>
+  <button id="joinbtn" disabled>進入公園</button>
+</div>
+
+<div id="hud" style="display:none">
+  <b id="hudname"></b><br>
+  WASD 移動・空格 跳躍<br>
+  <b>B</b> 放下／收起紙箱<br>
+  <b>L</b> 躺下／起來<br>
+  <b>Enter</b> 聊天
+</div>
+
+<div id="chatbox" style="display:none">
+  <div id="chatmsgs"></div>
+  <input id="chatinput" placeholder="按 Enter 開始聊天，Esc 結束">
+</div>
+<div id="chatcount"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ============ 基本設定 ============
+const PARK = 16; // 公園半徑（方塊數）
+let ws, myId = null, myName = '';
+let chatting = false;
+
+// ============ Three.js 場景 ============
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 25, 60);
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 200);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+const sun = new THREE.DirectionalLight(0xfff2cc, 0.8);
+sun.position.set(20, 40, 15);
+scene.add(sun);
+
+// --- 用 canvas 產生像素風材質 ---
+function pixelTexture(base, spots, spotColor) {
+  const c = document.createElement('canvas'); c.width = c.height = 16;
+  const g = c.getContext('2d');
+  g.fillStyle = base; g.fillRect(0, 0, 16, 16);
+  for (let i = 0; i < spots; i++) {
+    g.fillStyle = spotColor;
+    g.fillRect((Math.random() * 16) | 0, (Math.random() * 16) | 0, 1, 1);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter;
+  return t;
+}
+const texGrass = pixelTexture('#5dbb3a', 20, '#4ea32f');
+const texDirt  = pixelTexture('#8a5a2b', 15, '#7a4d22');
+const texLeaf  = pixelTexture('#2e8b2e', 25, '#257025');
+const texTrunk = pixelTexture('#6b4423', 10, '#5a381c');
+const texCard  = (() => { // 紙箱：棕色 + 膠帶
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const g = c.getContext('2d');
+  g.fillStyle = '#c89050'; g.fillRect(0, 0, 32, 32);
+  g.fillStyle = '#b57e42';
+  for (let i = 0; i < 30; i++) g.fillRect((Math.random()*32)|0, (Math.random()*32)|0, 2, 1);
+  g.fillStyle = '#e8d8a0'; g.fillRect(14, 0, 4, 32); // 膠帶
+  const t = new THREE.CanvasTexture(c);
+  t.magFilter = THREE.NearestFilter; t.minFilter = THREE.NearestFilter;
+  return t;
+})();
+
+// --- 草地（方塊風，用 InstancedMesh）---
+{
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  const mats = [
+    new THREE.MeshLambertMaterial({ map: texDirt }), new THREE.MeshLambertMaterial({ map: texDirt }),
+    new THREE.MeshLambertMaterial({ map: texGrass }), new THREE.MeshLambertMaterial({ map: texDirt }),
+    new THREE.MeshLambertMaterial({ map: texDirt }), new THREE.MeshLambertMaterial({ map: texDirt }),
+  ];
+  const n = PARK * 2 + 1;
+  const ground = new THREE.InstancedMesh(geo, mats, n * n);
+  const m = new THREE.Matrix4();
+  let i = 0;
+  for (let x = -PARK; x <= PARK; x++) for (let z = -PARK; z <= PARK; z++) {
+    m.setPosition(x, -0.5, z);
+    ground.setMatrixAt(i++, m);
+  }
+  scene.add(ground);
+}
+
+// --- 樹 ---
+function addTree(x, z) {
+  const trunk = new THREE.Mesh(new THREE.BoxGeometry(1, 3, 1), new THREE.MeshLambertMaterial({ map: texTrunk }));
+  trunk.position.set(x, 1.5, z);
+  const leaves = new THREE.Mesh(new THREE.BoxGeometry(3, 2.5, 3), new THREE.MeshLambertMaterial({ map: texLeaf }));
+  leaves.position.set(x, 4.2, z);
+  const l2 = new THREE.Mesh(new THREE.BoxGeometry(2, 1.5, 2), new THREE.MeshLambertMaterial({ map: texLeaf }));
+  l2.position.set(x, 5.8, z);
+  scene.add(trunk, leaves, l2);
+}
+[[6, 5], [-8, 3], [4, -9], [-5, -6], [10, -4], [-11, -9], [9, 10], [-3, 11]].forEach(([x, z]) => addTree(x, z));
+
+// --- 小花 ---
+{
+  const colors = [0xff5555, 0xffd740, 0xba68c8, 0xffffff, 0x42a5f5];
+  for (let i = 0; i < 40; i++) {
+    const x = (Math.random() * 2 - 1) * (PARK - 1);
+    const z = (Math.random() * 2 - 1) * (PARK - 1);
+    const f = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.25),
+      new THREE.MeshLambertMaterial({ color: colors[(Math.random() * colors.length) | 0] }));
+    f.position.set(x, 0.12, z);
+    scene.add(f);
+  }
+}
+
+// --- 長椅（裝飾）---
+function addBench(x, z, ry) {
+  const g = new THREE.Group();
+  const wood = new THREE.MeshLambertMaterial({ color: 0x8d6e63 });
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(2, 0.2, 0.8), wood);
+  seat.position.y = 0.5;
+  const back = new THREE.Mesh(new THREE.BoxGeometry(2, 0.7, 0.15), wood);
+  back.position.set(0, 0.9, -0.33);
+  g.add(seat, back);
+  g.position.set(x, 0, z); g.rotation.y = ry;
+  scene.add(g);
+}
+addBench(2, 2, 0.6); addBench(-6, 7, -1.2); addBench(8, -8, 2.2);
+
+// ============ 角色 ============
+// 每個角色 = 身體（body）+ 辨識配件（accessory），全部用方塊拼出，不需外部圖片
+const SKIN = 0xffcc99;
+function box(w, h, d, color, x, y, z, ry) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color }));
+  m.position.set(x, y, z);
+  if (ry) m.rotation.y = ry;
+  return m;
+}
+// 黃樂：紅色旗袍 + 黑色長髮（瀏海＋兩側垂髮）+ 手持摺扇
+function makeCharHuangLe() {
+  const g = new THREE.Group(), inner = new THREE.Group();
+  inner.add(
+    box(0.55, 0.8, 0.35, 0xd32f2f, 0, 0.75, 0),          // 紅色旗袍
+    box(0.5, 0.4, 0.35, 0x212121, 0, 0.2, 0),            // 黑褲
+    box(0.42, 0.42, 0.42, SKIN, 0, 1.38, 0),             // 頭
+    box(0.46, 0.12, 0.46, 0x111111, 0, 1.62, 0),         // 瀏海
+    box(0.12, 0.9, 0.12, 0x111111, -0.2, 1.0, -0.2),     // 長髮垂背（左）
+    box(0.12, 0.9, 0.12, 0x111111, 0.2, 1.0, -0.2),      // 長髮垂背（右）
+    box(0.3, 0.3, 0.04, 0xfff3c4, 0.45, 0.85, 0.15, 0.6) // 手持摺扇
+  );
+  g.add(inner); g.userData.inner = inner;
+  return g;
+}
+// 黃仁勳：黑西裝 + 白襯衫前襟 + 手拿銀色筆電
+function makeCharHuangRenxun() {
+  const g = new THREE.Group(), inner = new THREE.Group();
+  inner.add(
+    box(0.55, 0.7, 0.35, 0x212121, 0, 0.75, 0),         // 黑西裝
+    box(0.2, 0.5, 0.05, 0xffffff, 0, 0.8, 0.18),        // 白襯衫前襟
+    box(0.5, 0.4, 0.35, 0x333333, 0, 0.2, 0),           // 黑褲
+    box(0.42, 0.42, 0.42, SKIN, 0, 1.38, 0),            // 頭
+    box(0.46, 0.1, 0.46, 0x111111, 0, 1.6, 0),          // 短髮
+    box(0.9, 0.06, 0.6, 0xb0bec5, 0, 0.75, 0.45, 0.3)   // 手拿銀色筆電
+  );
+  g.add(inner); g.userData.inner = inner;
+  return g;
+}
+// 馬斯克：灰色 T 恤 + 棕色短髮 + 腰側迷你火箭模型
+function makeCharMusk() {
+  const g = new THREE.Group(), inner = new THREE.Group();
+  inner.add(
+    box(0.55, 0.7, 0.35, 0x9e9e9e, 0, 0.75, 0),         // 灰色 T 恤
+    box(0.5, 0.4, 0.35, 0x3949ab, 0, 0.2, 0),           // 牛仔褲
+    box(0.42, 0.42, 0.42, SKIN, 0, 1.38, 0),            // 頭
+    box(0.46, 0.1, 0.46, 0x6d4c41, 0, 1.6, 0),          // 棕色短髮
+    box(0.14, 0.35, 0.14, 0xe53935, 0.38, 0.6, 0),      // 腰側迷你火箭（箭身）
+    box(0.1, 0.1, 0.1, 0xffffff, 0.38, 0.85, 0)         // 火箭頭
+  );
+  g.add(inner); g.userData.inner = inner;
+  return g;
+}
+// 川普：紅帽（寬邊＋帽冠）+ 藍西裝 + 右手長傘
+function makeCharTrump() {
+  const g = new THREE.Group(), inner = new THREE.Group();
+  inner.add(
+    box(0.55, 0.7, 0.35, 0x1565c0, 0, 0.75, 0),         // 藍西裝
+    box(0.5, 0.4, 0.35, 0x0d47a1, 0, 0.2, 0),           // 藍褲
+    box(0.42, 0.42, 0.42, 0xffd9a0, 0, 1.38, 0),        // 頭
+    box(0.6, 0.08, 0.6, 0xd32f2f, 0, 1.62, 0),          // 紅帽寬邊
+    box(0.34, 0.18, 0.34, 0xd32f2f, 0, 1.72, 0),        // 紅帽帽冠
+    box(0.05, 1.5, 0.05, 0x4e342e, 0.45, 0.8, 0.1),     // 右手長傘（傘柄）
+    box(0.8, 0.12, 0.8, 0xd32f2f, 0.45, 1.6, 0.1)       // 傘面
+  );
+  g.add(inner); g.userData.inner = inner;
+  return g;
+}
+// 角色表：charType -> { 名稱, 3D 建構函式, 2D 預覽配色 }
+const CHARACTORS = {
+  huangle:     { name: '黃樂',   desc: '紅旗袍・摺扇',   make: makeCharHuangLe,     dress: '#d32f2f', hair: '#111111', acc: '#fff3c4' },
+  huangrenxun: { name: '黃仁勳', desc: '黑西裝・筆電',   make: makeCharHuangRenxun, dress: '#212121', hair: '#111111', acc: '#b0bec5' },
+  musk:        { name: '馬斯克', desc: '灰 T 恤・火箭',  make: makeCharMusk,        dress: '#9e9e9e', hair: '#6d4c41', acc: '#e53935' },
+  trump:       { name: '川普',   desc: '紅帽・長傘',     make: makeCharTrump,       dress: '#1565c0', hair: '#d32f2f', acc: '#d32f2f' },
+};
+// 預設角色（舊版客戶端未帶 charType 時使用）
+function makePerson(color) {
+  const g = new THREE.Group();          // 外層：yaw
+  const inner = new THREE.Group();      // 內層：躺下旋轉
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, 0.35), new THREE.MeshLambertMaterial({ color }));
+  body.position.y = 0.75;
+  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.35), new THREE.MeshLambertMaterial({ color: 0x3949ab }));
+  legs.position.y = 0.2;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), new THREE.MeshLambertMaterial({ color: 0xffcc99 }));
+  head.position.y = 1.38;
+  inner.add(body, legs, head);
+  g.add(inner);
+  g.userData.inner = inner;
+  return g;
+}
+// 依 charType 建立角色；null/未知值回退到預設角色
+function makeCharByType(charType) {
+  const c = CHARACTORS[charType];
+  return c ? c.make() : makePerson([0xef5350, 0x66bb6a, 0xffa726, 0xab47bc, 0x26c6da][(Math.random() * 5) | 0]);
+}
+// 2D 像素風預覽圖（登入畫面角色卡用，不需外部圖片）
+function drawCharPreview(cv, c) {
+  const g = cv.getContext('2d');
+  g.fillStyle = '#cdeac2'; g.fillRect(0, 0, 64, 96);   // 草地背景
+  g.fillStyle = c.hair; g.fillRect(20, 10, 24, 10);    // 瀏海／帽簷
+  g.fillStyle = c.hair; g.fillRect(18, 18, 4, 26);     // 左側垂髮（川普為帽簷）
+  g.fillStyle = c.hair; g.fillRect(42, 18, 4, 26);     // 右側垂髮
+  g.fillStyle = '#ffcc99'; g.fillRect(22, 18, 20, 18); // 臉
+  g.fillStyle = c.dress; g.fillRect(18, 36, 28, 26);   // 衣服（旗袍／西裝／T 恤）
+  g.fillStyle = '#3949ab'; g.fillRect(20, 62, 9, 20);  // 左腿
+  g.fillStyle = '#3949ab'; g.fillRect(35, 62, 9, 20);  // 右腿
+  g.fillStyle = c.acc; g.fillRect(46, 40, 10, 10);     // 辨識配件（扇／筆電／火箭／傘）
+  g.fillStyle = c.acc; g.fillRect(49, 50, 4, 26);      // 配件延伸（傘柄）
+}
+function makeBox() {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.55, 0.7), new THREE.MeshLambertMaterial({ map: texCard }));
+  b.position.y = 0.27;
+  return b;
+}
+function makeNameTag(text) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 64;
+  const g = c.getContext('2d');
+  g.font = 'bold 32px sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = 'rgba(0,0,0,.5)';
+  const w = g.measureText(text).width + 20;
+  g.fillRect(128 - w / 2, 8, w, 48);
+  g.fillStyle = '#fff';
+  g.fillText(text, 128, 32);
+  const t = new THREE.CanvasTexture(c);
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false }));
+  s.scale.set(1.6, 0.4, 1);
+  s.position.y = 2.0;
+  return s;
+}
+
+// 自己的角色（依登入時選定的 charType 建立）
+const me = { x: 0, y: 0, z: 0, vy: 0, ry: 0, lying: false, box: null, charType: null }; // box: {x,z}
+let myMesh = makePerson(0x42a5f5); // 預設外觀，選角後重建
+const myBox = makeBox();
+const myTag = makeNameTag('我');
+myMesh.add(myTag);
+scene.add(myMesh, myBox);
+function setMyChar(charType) {
+  me.charType = charType;
+  const c = CHARACTORS[charType];
+  if (!c) return;
+  const m = c.make();
+  m.add(myTag);
+  m.position.copy(myMesh.position);
+  m.rotation.y = myMesh.rotation.y;
+  scene.remove(myMesh);
+  scene.add(m);
+  myMesh = m;
+}
+
+// 遠端玩家
+const others = new Map(); // id -> { mesh, box, tag, tx, ty, tz, try_, lying, box, last }
+function addOther(id, name, state) {
+  const mesh = makeCharByType(state.charType); // 依 charType 呼叫對應 makeCharXXX()
+  const box = makeBox();
+  const tag = makeNameTag(name);
+  mesh.add(tag);
+  scene.add(mesh, box);
+  others.set(id, { mesh, box, tag, tx: state.x, ty: state.y, tz: state.z, try_: state.ry, lying: state.lying, box: state.box });
+}
+function removeOther(id) {
+  const o = others.get(id);
+  if (o) { scene.remove(o.mesh, o.box); others.delete(id); }
+}
+
+// ============ 輸入 ============
+const keys = {};
+addEventListener('keydown', (e) => {
+  if (e.target === chatInput) {
+    if (e.key === 'Escape') { chatInput.blur(); chatting = false; }
+    return;
+  }
+  keys[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Enter') { chatting = true; chatInput.focus(); }
+  if (e.code === 'KeyB') toggleBox();
+  if (e.code === 'KeyL') toggleLie();
+});
+addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function toggleBox() {
+  if (me.lying) return;
+  if (me.box) { me.box = null; }
+  else {
+    const dx = Math.sin(me.ry), dz = Math.cos(me.ry);
+    me.box = { x: me.x + dx * 1.2, z: me.z + dz * 1.2 };
+  }
+}
+function toggleLie() {
+  me.lying = !me.lying;
+  if (me.lying) me.box = null; // 躺下時紙箱直接鋪在身體下
+}
+
+// ============ 聊天 ============
+const chatInput = document.getElementById('chatinput');
+const chatMsgs = document.getElementById('chatmsgs');
+function addChat(who, text, system) {
+  const d = document.createElement('div');
+  if (system) { d.className = 'sys'; d.textContent = text; }
+  else { d.innerHTML = `<span class="who">${who}：</span>${text.replace(/</g, '&lt;')}`; }
+  chatMsgs.appendChild(d);
+  while (chatMsgs.children.length > 60) chatMsgs.firstChild.remove();
+  chatMsgs.scrollTop = chatMsgs.scrollHeight;
+}
+chatInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && chatInput.value.trim()) {
+    ws.send(JSON.stringify({ t: 'chat', text: chatInput.value.trim() }));
+    chatInput.value = '';
+  }
+});
+
+// ============ 登入：角色選擇 ============
+let myCharType = null;
+const joinBtn = document.getElementById('joinbtn');
+const charSel = document.getElementById('charselect');
+for (const [type, c] of Object.entries(CHARACTORS)) {
+  const card = document.createElement('div');
+  card.className = 'charcard';
+  const cv = document.createElement('canvas');
+  cv.width = 64; cv.height = 96;
+  cv.style.width = '96px'; cv.style.height = '144px';
+  drawCharPreview(cv, c);
+  const nm = document.createElement('div'); nm.className = 'cname'; nm.textContent = c.name;
+  const ds = document.createElement('div'); ds.className = 'cdesc'; ds.textContent = c.desc;
+  card.append(cv, nm, ds);
+  card.onclick = () => {
+    myCharType = type;
+    charSel.querySelectorAll('.charcard').forEach((el) => el.classList.remove('selected'));
+    card.classList.add('selected');
+    joinBtn.disabled = false; // 選完角色才能進入公園
+  };
+  charSel.appendChild(card);
+}
+
+// ============ WebSocket ============
+function connect(name, charType) {
+  myName = name;
+  myCharType = charType;
+  setMyChar(charType);
+  myTag.material.map = makeNameTag(name).material.map;
+  myTag.material.needsUpdate = true;
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, charType }));
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'init') {
+      myId = m.id;
+      document.getElementById('login').style.display = 'none';
+      document.getElementById('hud').style.display = 'block';
+      document.getElementById('chatbox').style.display = 'block';
+      document.getElementById('hudname').textContent = m.name;
+      for (const p of m.players) if (p.id !== myId) addOther(p.id, p.name, p.state);
+      addChat('', '歡迎來到線上公園！按 Enter 聊天', true);
+    } else if (m.t === 'join') {
+      addOther(m.id, m.name, { x: 0, y: 0, z: 0, ry: 0, lying: false, box: null, charType: m.charType });
+      addChat('', `${m.name} 進入了公園`, true);
+    } else if (m.t === 'leave') {
+      removeOther(m.id);
+      addChat('', `${m.name} 離開了公園`, true);
+    } else if (m.t === 'pos') {
+      const o = others.get(m.id);
+      if (o) { o.tx = m.x; o.ty = m.y; o.tz = m.z; o.try_ = m.ry; o.lying = m.lying; o.box = m.box; } // charType 於 join 時決定，pos 只透傳
+    } else if (m.t === 'chat') {
+      addChat(m.name, m.text, m.system);
+    }
+  };
+  ws.onclose = () => {
+    document.getElementById('chatcount').style.display = 'block';
+    document.getElementById('chatcount').textContent = '連線中斷，重新連線中…';
+    setTimeout(() => connect(myName, myCharType), 2000);
+  };
+}
+joinBtn.onclick = () => {
+  if (!myCharType) return; // 未選角色不允許進入
+  const n = document.getElementById('nameinput').value.trim() || '匿名';
+  connect(n, myCharType);
+};
+document.getElementById('nameinput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') joinBtn.click();
+});
+
+// ============ 遊戲迴圈 ============
+let lastT = performance.now(), sendT = 0;
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = Math.min((now - lastT) / 1000, 0.1);
+  lastT = now;
+
+  // --- 自己的移動 ---
+  if (!me.lying) {
+    const speed = 4.5;
+    let mx = 0, mz = 0;
+    if (keys['KeyW']) { mx += Math.sin(me.ry); mz += Math.cos(me.ry); }
+    if (keys['KeyS']) { mx -= Math.sin(me.ry); mz -= Math.cos(me.ry); }
+    if (keys['KeyA']) { mx += Math.cos(me.ry); mz -= Math.sin(me.ry); }
+    if (keys['KeyD']) { mx -= Math.cos(me.ry); mz += Math.sin(me.ry); }
+    const len = Math.hypot(mx, mz);
+    if (len > 0) {
+      me.x += mx / len * speed * dt;
+      me.z += mz / len * speed * dt;
+    }
+    if (keys['Space'] && me.y <= 0.01) me.vy = 6;
+  }
+  me.vy -= 18 * dt;
+  me.y = Math.max(0, me.y + me.vy * dt);
+  me.x = Math.max(-PARK, Math.min(PARK, me.x));
+  me.z = Math.max(-PARK, Math.min(PARK, me.z));
+
+  // 視角旋轉（滑鼠拖曳）
+  if (dragging) {
+    me.ry -= (e_now.x - dragStart.x) * 0.005;
+    dragStart = e_now;
+  }
+
+  // --- 自己的外觀 ---
+  myMesh.position.set(me.x, me.y, me.z);
+  myMesh.rotation.y = me.ry;
+  const targetTilt = me.lying ? -Math.PI / 2 : 0;
+  myMesh.userData.inner.rotation.z += (targetTilt - myMesh.userData.inner.rotation.z) * Math.min(1, dt * 10);
+  myMesh.userData.inner.position.y = me.lying ? 0.35 : 0;
+  myTag.position.y = me.lying ? 0.9 : 2.0;
+
+  // 自己的紙箱
+  if (me.lying) {
+    myBox.visible = true;
+    myBox.position.set(me.x, me.y, me.z);
+    myBox.rotation.y = me.ry;
+  } else if (me.box) {
+    myBox.visible = true;
+    myBox.position.set(me.box.x, 0, me.box.z);
+    myBox.rotation.y = me.ry;
+  } else myBox.visible = false;
+
+  // --- 遠端玩家（插值）---
+  for (const [id, o] of others) {
+    o.mesh.position.x += (o.tx - o.mesh.position.x) * Math.min(1, dt * 10);
+    o.mesh.position.y += (o.ty - o.mesh.position.y) * Math.min(1, dt * 10);
+    o.mesh.position.z += (o.tz - o.mesh.position.z) * Math.min(1, dt * 10);
+    o.mesh.rotation.y = o.try_;
+    const targetTilt = o.lying ? -Math.PI / 2 : 0;
+    o.mesh.userData.inner.rotation.z += (targetTilt - o.mesh.userData.inner.rotation.z) * Math.min(1, dt * 10);
+    o.mesh.userData.inner.position.y = o.lying ? 0.35 : 0;
+    o.tag.position.y = o.lying ? 0.9 : 2.0;
+    if (o.lying) {
+      o.box.visible = true;
+      o.box.position.copy(o.mesh.position);
+      o.box.rotation.y = o.try_;
+    } else if (o.box) {
+      o.box.visible = true;
+      o.box.position.set(o.box.x, 0, o.box.z);
+      o.box.rotation.y = o.try_;
+    } else o.box.visible = false;
+  }
+
+  // --- 第三人稱鏡頭 ---
+  const camDist = me.lying ? 3 : 5;
+  const camH = me.lying ? 1.2 : 2.5;
+  const cx = me.x - Math.sin(me.ry) * camDist;
+  const cz = me.z - Math.cos(me.ry) * camDist;
+  camera.position.lerp(new THREE.Vector3(cx, me.y + camH, cz), Math.min(1, dt * 8));
+  camera.lookAt(me.x, me.y + (me.lying ? 0.5 : 1.2), me.z);
+
+  // --- 傳送狀態（10Hz）---
+  if (ws && ws.readyState === 1 && now - sendT > 100) {
+    sendT = now;
+    ws.send(JSON.stringify({ t: 'pos', x: me.x, y: me.y, z: me.z, ry: me.ry, lying: me.lying, box: me.box, charType: me.charType }));
+  }
+
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(tick);
+
+// 滑鼠拖曳轉視角
+let dragging = false, dragStart = { x: 0, y: 0 }, e_now = { x: 0, y: 0 };
+renderer.domElement.addEventListener('mousedown', (e) => { dragging = true; dragStart = { x: e.clientX, y: e.clientY }; e_now = dragStart; });
+addEventListener('mouseup', () => dragging = false);
+addEventListener('mousemove', (e) => { e_now = { x: e.clientX, y: e.clientY }; });
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

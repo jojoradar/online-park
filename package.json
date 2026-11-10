@@ -1,0 +1,12 @@
+{
+  "name": "online-park",
+  "version": "1.0.0",
+  "description": "線上公園 - 麥塊風多人網頁遊戲",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
